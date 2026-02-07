@@ -1,12 +1,12 @@
 blueprint:
+  name: "ZHA - IKEA TRADFRI - 2 Button Remote - Enhanced"
+  description: IKEA TRADFRI 2 button remote s volitelným nočním režimem a dvojklikem.
   source_url: https://github.com/metbril/home-assistant-blueprints/blob/main/automation/zha_ikea_tradfri_2button_onoff_brightness.yaml
-  name: "ZHA - IKEA TRADFRI - 2 Button Remote - On/Off and Brightness (Night Mode, Optional, Double Click)"
-  description: IKEA TRADFRI 2 button remote s volitelným nočním režimem a podporou dvojkliku.
   domain: automation
 
 input:
   remote:
-    name: IKEA TRADFRI remote control
+    name: IKEA TRADFRI remote
     selector:
       device:
         integration: zha
@@ -14,146 +14,130 @@ input:
         model: TRADFRI on/off switch
   light:
     name: Day light
-    description: Light used outside night hours
     selector:
       entity:
         domain: light
   night_light:
     name: Night light
-    description: Light used during night hours (optional)
     selector:
       entity:
         domain: light
     default: []
   use_night_mode:
     name: Use night mode
-    description: Enable different light for night hours and night timing.
     selector:
       boolean:
     default: false
   night_start:
-    name: Night mode start
-    description: Time when night mode starts
+    name: Night start
     selector:
       time:
     default: "20:00:00"
   night_end:
-    name: Night mode end
-    description: Time when night mode ends
+    name: Night end
     selector:
       time:
     default: "06:00:00"
   speed:
-    name: Speed
+    name: Speed (ms)
     selector:
       number:
         min: 100
         max: 1000
         step: 100
-        unit_of_measurement: milliseconds
         mode: slider
     default: 500
-  on_double_click_action:
-    name: ON double click action
-    description: Action to run on ON double click
-    default: []
+  on_double_action:
+    name: ON double click
     selector:
       action: {}
-  off_double_click_action:
-    name: OFF double click action
-    description: Action to run on OFF double click
     default: []
+  off_double_action:
+    name: OFF double click
     selector:
       action: {}
+    default: []
+
+variables:
+  speed: !input speed
+  trans: "{{ (speed / 1000) | float(0.5) }}"
+  day_light: !input light
+  night_light: !input night_light
+  use_night: !input use_night_mode
+  night_start: !input night_start
+  night_end: !input night_end
+  is_night: >
+    {% set now = now().strftime('%H:%M:%S') %}
+    {{ (night_start <= now <= night_end) if night_start <= night_end else (now >= night_start or now <= night_end) }}
+  target: >
+    {{ night_light if use_night and is_night and night_light else day_light }}
+
+trigger:
+- platform: event
+  event_type: zha_event
+  event_
+    device_id: !input remote
+
+action:
+- choose:
+  - conditions:
+    - condition: template
+      value_template: "{{ trigger.event.data.command == 'on' }}"
+    sequence:
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ trigger.event.data.args is defined }}"
+        sequence: !input on_double_action
+      - sequence:
+        - service: light.turn_on
+          target:
+            entity_id: "{{ target }}"
+          
+            transition: "{{ trans }}"
+  - conditions:
+    - condition: template
+      value_template: "{{ trigger.event.data.command == 'move_with_on_off' }}"
+    sequence:
+    - repeat:
+        sequence:
+        - service: light.turn_on
+          target:
+            entity_id: "{{ target }}"
+          
+            brightness_step_pct: 10
+            transition: "{{ trans }}"
+        - delay: "{{ '00:00:{{ speed }}' | timestamp_custom('%H:%M:%S.%f')[:-3] }}"
+  - conditions:
+    - condition: template
+      value_template: "{{ trigger.event.data.command == 'off' }}"
+    sequence:
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: "{{ trigger.event.data.args is defined }}"
+        sequence: !input off_double_action
+      - sequence:
+        - service: light.turn_off
+          target:
+            entity_id: "{{ target }}"
+          
+            transition: "{{ trans }}"
+  - conditions:
+    - condition: template
+      value_template: "{{ trigger.event.data.command == 'move' }}"
+    sequence:
+    - repeat:
+        sequence:
+        - service: light.turn_on
+          target:
+            entity_id: "{{ target }}"
+          
+            brightness_step_pct: >
+              {% set b = state_attr(target, 'brightness') | default(255) | int %}
+              {{ 0 if b <= 3 else -10 }}
+            transition: "{{ trans }}"
+        - delay: "{{ '00:00:{{ speed }}' | timestamp_custom('%H:%M:%S.%f')[:-3] }}"
 
 mode: restart
 max_exceeded: silent
-
-variables:
-  var_speed: !input speed
-  transition_speed: "{{ (var_speed / 1000) | float }}"
-  day_light: !input light
-  night_light_var: !input night_light
-  night_start: !input night_start
-  night_end: !input night_end
-  use_night_mode: !input use_night_mode
-  is_night: >
-    {% set now_t = now().strftime('%H:%M:%S') %}
-    {% if night_start < night_end %}
-      {{ night_start <= now_t < night_end }}
-    {% else %}
-      {{ now_t >= night_start or now_t < night_end }}
-    {% endif %}
-  target_light: >
-    {% if use_night_mode and night_light_var != [] %}
-      {{ night_light_var if is_night else day_light }}
-    {% else %}
-      {{ day_light }}
-    {% endif %}
-
-trigger:
-  - platform: event
-    event_type: zha_event
-    event_
-      device_id: !input remote
-
-action:
-  - choose:
-      # ON single
-      - conditions:
-          - "{{ trigger.event.data.command == 'on' and trigger.event.data.args is not defined }}"
-        sequence:
-          - service: light.turn_on
-            target:
-              entity_id: "{{ target_light }}"
-            
-              transition: "{{ transition_speed }}"
-      # ON double click
-      - conditions:
-          - "{{ trigger.event.data.command == 'on' and trigger.event.data.args is defined }}"
-        sequence: !input on_double_click_action
-      # Brightness UP
-      - conditions:
-          - "{{ trigger.event.data.command == 'move_with_on_off' }}"
-        sequence:
-          - repeat:
-              while: []
-              sequence:
-                - service: light.turn_on
-                  target:
-                    entity_id: "{{ target_light }}"
-                  
-                    brightness_step_pct: 10
-                    transition: "{{ transition_speed }}"
-                - delay:
-                    milliseconds: !input speed
-      # OFF single
-      - conditions:
-          - "{{ trigger.event.data.command == 'off' and trigger.event.data.args is not defined }}"
-        sequence:
-          - service: light.turn_off
-            target:
-              entity_id: "{{ target_light }}"
-            
-              transition: "{{ transition_speed }}"
-      # OFF double click
-      - conditions:
-          - "{{ trigger.event.data.command == 'off' and trigger.event.data.args is defined }}"
-        sequence: !input off_double_click_action
-      # Brightness DOWN (hold OFF, min 1%)
-      - conditions:
-          - "{{ trigger.event.data.command == 'move' }}"
-        sequence:
-          - repeat:
-              while: []
-              sequence:
-                - service: light.turn_on
-                  target:
-                    entity_id: "{{ target_light }}"
-                  
-                    brightness_step: >
-                      {% set b = state_attr(target_light, 'brightness') | int(0) %}
-                      {% if b <= 3 %} 0 {% else %} {{ -((b * 0.1) | int) }} {% endif %}
-                    transition: "{{ transition_speed }}"
-                - delay:
-                    milliseconds: !input speed
